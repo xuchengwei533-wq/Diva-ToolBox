@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Project specific
+# Ignore large datasets if they are not meant to be tracked
+# Uncomment the following line if you want to exclude all wav files
+# *.wav
+# *.mp3
