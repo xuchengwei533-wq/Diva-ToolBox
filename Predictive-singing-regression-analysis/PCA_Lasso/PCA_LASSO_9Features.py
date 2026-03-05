@@ -11,6 +11,8 @@ from sklearn.linear_model import LassoCV
 root_dir = os.path.dirname(os.path.abspath(__file__))
 data_dir = os.path.join(root_dir, "Dataset", "Chest new0206", "Chest new0206")
 score_path = os.path.join(root_dir, "打分Chest_new0206_scores_matrix.xlsx")
+if not os.path.exists(score_path):
+    score_path = os.path.join(os.path.dirname(root_dir), "打分Chest_new0206_scores_matrix.xlsx")
 out_root = os.path.join(root_dir, "PCA_LASSO_9Features_Output")
 
 features = [

@@ -48,11 +48,11 @@ python .\ExtractTool\Extract_NewFeatures.py
 
 逻辑：
 
-- 用 `librosa.pyin` 估计每一帧的基频 F0（C2–C7）
-- 去掉无效或非正值的 F0
-- 将 F0 转为周期 `T = 1 / F0`
-- 计算相邻周期差 `|T(i+1) - T(i)|`
-- 用平均周期归一化，得到每帧抖动比值序列
+- 优先使用 `parselmouth`（Praat 标准实现）
+- 将音频转换为 Praat `PointProcess (periodic, cc)`（`pitch_floor=65 Hz`, `pitch_ceiling=1000 Hz`）
+- 调用 `praat.call(point_process, "Get jitter (local)", 0.0, 0.0, 0.0001, 0.02, 1.3)` 计算标准 Jitter(Local)
+- 输出为单值（标量），保存为一维 CSV（覆盖已有同名文件）
+- 若未安装 `parselmouth`，则回退到 `librosa.pyin` 基于周期差的近似计算
 
 ### 2) Shimmer
 

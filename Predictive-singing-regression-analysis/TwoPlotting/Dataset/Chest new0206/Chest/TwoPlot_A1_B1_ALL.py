@@ -39,6 +39,14 @@ FEATURES = [
     {"name": "CPP", "dir": get_feature_dir(data_dir, "CPP", "Cpp"), "label": "CPP (dB)"}
 ]
 
+plot_features = os.environ.get("PLOT_FEATURES")
+if plot_features:
+    allow_features = {item.strip() for item in plot_features.split(",") if item.strip()}
+else:
+    allow_features = None
+
+jitter_feature = next((feature for feature in FEATURES if feature["name"] == "Jitter"), None)
+
 def normalize_id(value):
     if value is None:
         return ""
@@ -123,7 +131,7 @@ def load_series(path):
         return None
     return arr
 
-def build_feature_medians(feature, score_map, allowed_suffixes=None):
+def build_feature_medians(feature, score_map, allowed_suffixes=None, drop_ids=None):
     vals = {}
     if not os.path.isdir(feature["dir"]):
         print(f"❌ DEBUG: Directory not found: {feature['dir']}")
@@ -144,6 +152,9 @@ def build_feature_medians(feature, score_map, allowed_suffixes=None):
             skipped_suffix += 1
             continue
         base_id = normalize_id(os.path.splitext(f)[0])
+        if drop_ids is not None and base_id in drop_ids:
+            skipped_id += 1
+            continue
         if base_id not in score_map:
             skipped_id += 1
             continue
@@ -161,9 +172,17 @@ def build_feature_medians(feature, score_map, allowed_suffixes=None):
     print(f"✅ DEBUG: {feature['name']} - Matched: {match_count}, Skipped Suffix: {skipped_suffix}, Skipped ID: {skipped_id}, Skipped Pitch: {skipped_pitch}, Skipped Data: {skipped_data}")
     return vals
 
-def build_pair_points(feature_x, feature_y, score_map, allowed_suffixes=None):
-    x_vals = build_feature_medians(feature_x, score_map, allowed_suffixes)
-    y_vals = build_feature_medians(feature_y, score_map, allowed_suffixes)
+def get_b1_max_id(jitter_feature, score_map):
+    if jitter_feature is None:
+        return None
+    vals = build_feature_medians(jitter_feature, score_map, {"B", "1"})
+    if not vals:
+        return None
+    return max(vals.items(), key=lambda item: item[1][0])[0]
+
+def build_pair_points(feature_x, feature_y, score_map, allowed_suffixes=None, drop_ids=None):
+    x_vals = build_feature_medians(feature_x, score_map, allowed_suffixes, drop_ids)
+    y_vals = build_feature_medians(feature_y, score_map, allowed_suffixes, drop_ids)
     xs = []
     ys = []
     scores = []
@@ -179,14 +198,18 @@ def build_pair_points(feature_x, feature_y, score_map, allowed_suffixes=None):
         return np.array([], dtype=np.float32), np.array([], dtype=np.float32), np.array([], dtype=np.int32)
     return np.asarray(xs, dtype=np.float32), np.asarray(ys, dtype=np.float32), np.asarray(scores, dtype=np.int32)
 
-def scatter_feature_pair(ax, xs, ys, scores, title, xlabel, ylabel):
+def scatter_feature_pair(ax, xs, ys, scores, title, xlabel, ylabel, xlim=None, ylim=None, point_size=30):
     if xs.size == 0:
         ax.set_axis_off()
         ax.set_title(title)
         return
     rng = np.random.default_rng(42)
-    xs_j = xs + rng.uniform(-0.01, 0.01, size=xs.shape[0]).astype(np.float32)
-    ys_j = ys + rng.uniform(-0.01, 0.01, size=ys.shape[0]).astype(np.float32)
+    x_span = float(np.max(xs) - np.min(xs))
+    y_span = float(np.max(ys) - np.min(ys))
+    x_jitter = 0.0 if x_span == 0 else x_span * 0.02
+    y_jitter = 0.0 if y_span == 0 else y_span * 0.02
+    xs_j = xs + rng.uniform(-x_jitter, x_jitter, size=xs.shape[0]).astype(np.float32)
+    ys_j = ys + rng.uniform(-y_jitter, y_jitter, size=ys.shape[0]).astype(np.float32)
     style_map = {
         1: {"color": "#1f77b4", "label": "1"},
         3: {"color": "#2ca02c", "label": "3"},
@@ -196,24 +219,50 @@ def scatter_feature_pair(ax, xs, ys, scores, title, xlabel, ylabel):
         mask = scores == score_val
         if np.any(mask):
             style = style_map[score_val]
-            ax.scatter(xs_j[mask], ys_j[mask], s=30, alpha=0.8, color=style["color"], marker="o", label=style["label"])
+            ax.scatter(xs_j[mask], ys_j[mask], s=point_size, alpha=0.8, color=style["color"], marker="o", label=style["label"])
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.legend(loc="upper right", frameon=False)
 
+def compute_axis_limits(values):
+    if values.size == 0:
+        return None
+    vmin = float(np.min(values))
+    vmax = float(np.max(values))
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        return None
+    span = vmax - vmin
+    if vmin == vmax:
+        pad = 0.01 if vmin == 0 else abs(vmin) * 0.1
+        return (vmin - pad, vmax + pad)
+    pad = max(span * 0.1, abs(vmax) * 0.02, abs(vmin) * 0.02)
+    return (vmin - pad, vmax + pad)
+
 def save_triplet_figures(score_map):
+    drop_id = get_b1_max_id(jitter_feature, score_map)
+    drop_ids = {drop_id} if drop_id else None
     for i in range(len(FEATURES)):
         for j in range(i + 1, len(FEATURES)):
             feature_x = FEATURES[i]
             feature_y = FEATURES[j]
-            a1_xs, a1_ys, a1_scores = build_pair_points(feature_x, feature_y, score_map, {"A", "1"})
-            b1_xs, b1_ys, b1_scores = build_pair_points(feature_x, feature_y, score_map, {"B", "1"})
-            all_xs, all_ys, all_scores = build_pair_points(feature_x, feature_y, score_map, None)
-            fig, axes = plt.subplots(1, 3, figsize=(13, 4.6), dpi=150, sharey=False)
-            scatter_feature_pair(axes[0], a1_xs, a1_ys, a1_scores, "A1", feature_x["label"], feature_y["label"])
-            scatter_feature_pair(axes[1], b1_xs, b1_ys, b1_scores, "B1", feature_x["label"], feature_y["label"])
-            scatter_feature_pair(axes[2], all_xs, all_ys, all_scores, "ALL", feature_x["label"], feature_y["label"])
+            if allow_features and feature_x["name"] not in allow_features and feature_y["name"] not in allow_features:
+                continue
+            use_drop = drop_ids if "Jitter" in (feature_x["name"], feature_y["name"]) else None
+            a1_xs, a1_ys, a1_scores = build_pair_points(feature_x, feature_y, score_map, {"A", "1"}, use_drop)
+            b1_xs, b1_ys, b1_scores = build_pair_points(feature_x, feature_y, score_map, {"B", "1"}, use_drop)
+            all_xs, all_ys, all_scores = build_pair_points(feature_x, feature_y, score_map, None, use_drop)
+            xlim = compute_axis_limits(all_xs)
+            ylim = compute_axis_limits(all_ys)
+            fig, axes = plt.subplots(1, 3, figsize=(10, 3.6), dpi=150, sharey=False)
+            point_size = 22 if "Jitter" in (feature_x["name"], feature_y["name"]) else 30
+            scatter_feature_pair(axes[0], a1_xs, a1_ys, a1_scores, "A1", feature_x["label"], feature_y["label"], xlim, ylim, point_size)
+            scatter_feature_pair(axes[1], b1_xs, b1_ys, b1_scores, "B1", feature_x["label"], feature_y["label"], xlim, ylim, point_size)
+            scatter_feature_pair(axes[2], all_xs, all_ys, all_scores, "ALL", feature_x["label"], feature_y["label"], xlim, ylim, point_size)
             fig.suptitle(f"{TECHNIQUE} - {feature_x['name']} vs {feature_y['name']}", fontsize=12)
             fig.tight_layout(rect=[0, 0, 1, 0.93])
             out_path = os.path.join(output_dir, f"{feature_x['name']}_vs_{feature_y['name']}_A1_B1_ALL.png")
