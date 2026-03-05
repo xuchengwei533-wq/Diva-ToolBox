@@ -80,6 +80,16 @@ def load_audio(file_path, target_sr=44100):
     return audio, original_sr, target_sr
 
 def extract_jitter(audio, sr, hop_length=512):
+    if HAS_PM:
+        try:
+            snd = pm.Sound(audio, sampling_frequency=sr)
+            point_process = pm.praat.call(snd, "To PointProcess (periodic, cc)", 65.0, 1000.0)
+            jitter_local = pm.praat.call(point_process, "Get jitter (local)", 0.0, 0.0, 0.0001, 0.02, 1.3)
+            if not np.isfinite(jitter_local):
+                return None
+            return np.asarray([float(jitter_local)], dtype=np.float32)
+        except Exception:
+            pass
     f0, _, _ = librosa.pyin(
         audio,
         fmin=librosa.note_to_hz("C2"),
@@ -294,7 +304,7 @@ def handle_one(file, audio, sr):
     saved = []
     for name, out_dir, func, args in targets:
         out_path = os.path.join(out_dir, base)
-        if os.path.exists(out_path):
+        if os.path.exists(out_path) and name != "Jitter":
             saved.append((name, "跳过"))
             continue
         series = func(*args)
