@@ -33,7 +33,7 @@ FEATURES = [
     {"name": "Shimmer", "dir": get_feature_dir(data_dir, "Shimmer"), "label": "Shimmer"},
     {"name": "H1H2", "dir": get_feature_dir(data_dir, "H1H2"), "label": "H1H2 (dB)"},
     {"name": "HNR", "dir": get_feature_dir(data_dir, "HNR", "Hnr"), "label": "HNR"},
-    {"name": "QValue", "dir": get_feature_dir(data_dir, "QValue"), "label": "QValue"},
+    {"name": "Q1", "dir": get_feature_dir(data_dir, "Q1"), "label": "Q1"},
     {"name": "SpectralSlope", "dir": get_feature_dir(data_dir, "SpectralSlope"), "label": "SpectralSlope"},
     {"name": "LowFreqEnergyRatio", "dir": get_feature_dir(data_dir, "LowFreqEnergyRatio"), "label": "LowFreqEnergyRatio"},
     {"name": "HighFreqNoiseRatio", "dir": get_feature_dir(data_dir, "HighFreqNoiseRatio"), "label": "HighFreqNoiseRatio"},

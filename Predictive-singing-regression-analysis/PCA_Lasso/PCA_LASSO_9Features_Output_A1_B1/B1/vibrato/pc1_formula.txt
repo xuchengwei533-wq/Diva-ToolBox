@@ -1,1 +1,1 @@
-PC1 = 0.5119*HighFreqNoiseRatio + 0.4803*SpectralSlope + 0.4593*HNR + -0.3700*Jitter + -0.3458*CPP + 0.1857*H1H2 + 0.0719*QValue + -0.0159*LowFreqEnergyRatio + 0.0025*Shimmer
+PC1 = 0.4773*Jitter + 0.4113*H1H2 + -0.4023*CPP + -0.3807*HNR + 0.3501*LowFreqEnergyRatio + 0.3147*Shimmer + -0.2508*Q1 + 0.0931*SpectralSlope + -0.0545*HighFreqNoiseRatio

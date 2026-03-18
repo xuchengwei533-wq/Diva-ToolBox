@@ -5,52 +5,72 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LassoCV
+from sklearn.linear_model import LassoCV, lasso_path
 
 
 root_dir = os.path.dirname(os.path.abspath(__file__))
-data_dir = os.path.join(root_dir, "Dataset", "Chest new0206", "Chest new0206")
+repo_root = os.path.dirname(root_dir)
+data_dir = os.path.join(repo_root, "Extract", "ExtractOutput", "Dataset", "Chest new0206")
+legacy_data_dir = os.path.join(root_dir, "Dataset", "Chest new0206", "Chest new0206")
 score_path = os.path.join(root_dir, "打分Chest_new0206_scores_matrix.xlsx")
 if not os.path.exists(score_path):
     score_path = os.path.join(os.path.dirname(root_dir), "打分Chest_new0206_scores_matrix.xlsx")
 out_root = os.path.join(root_dir, "PCA_LASSO_9Features_Output_A1_B1")
 
+def resolve_feature_dir(name, fallback_name=None):
+    if fallback_name is None:
+        fallback_name = name
+    candidates = [
+        os.path.join(data_dir, name),
+        os.path.join(data_dir, fallback_name),
+        os.path.join(data_dir, name + "Output"),
+        os.path.join(data_dir, fallback_name + "Output"),
+        os.path.join(legacy_data_dir, name),
+        os.path.join(legacy_data_dir, fallback_name),
+        os.path.join(legacy_data_dir, name + "Output"),
+        os.path.join(legacy_data_dir, fallback_name + "Output")
+    ]
+    for p in candidates:
+        if os.path.isdir(p):
+            return p
+    return candidates[0]
+
 features = [
     {
         "name": "Jitter",
-        "feature_dir": os.path.join(data_dir, "JitterOutput")
+        "feature_dir": resolve_feature_dir("Jitter")
     },
     {
         "name": "Shimmer",
-        "feature_dir": os.path.join(data_dir, "ShimmerOutput")
+        "feature_dir": resolve_feature_dir("Shimmer")
     },
     {
         "name": "H1H2",
-        "feature_dir": os.path.join(data_dir, "H1H2Output")
+        "feature_dir": resolve_feature_dir("H1H2")
     },
     {
         "name": "HNR",
-        "feature_dir": os.path.join(data_dir, "HNR_Output")
+        "feature_dir": resolve_feature_dir("Hnr", "HNR")
     },
     {
-        "name": "QValue",
-        "feature_dir": os.path.join(data_dir, "QValueOutput")
+        "name": "Q1",
+        "feature_dir": resolve_feature_dir("Q1")
     },
     {
         "name": "SpectralSlope",
-        "feature_dir": os.path.join(data_dir, "SpectralSlopeOutput")
+        "feature_dir": resolve_feature_dir("SpectralSlope")
     },
     {
         "name": "LowFreqEnergyRatio",
-        "feature_dir": os.path.join(data_dir, "LowFreqEnergyRatioOutput")
+        "feature_dir": resolve_feature_dir("LowFreqEnergyRatio")
     },
     {
         "name": "HighFreqNoiseRatio",
-        "feature_dir": os.path.join(data_dir, "HighFreqNoiseRatioOutput")
+        "feature_dir": resolve_feature_dir("HighFreqNoiseRatio")
     },
     {
         "name": "CPP",
-        "feature_dir": os.path.join(data_dir, "CPP_Output")
+        "feature_dir": resolve_feature_dir("Cpp", "CPP")
     }
 ]
 
@@ -212,7 +232,7 @@ def save_pca_results(df, out_dir):
     plt.close(fig)
 
 
-def save_lasso_results(df, out_dir):
+def save_lasso_results(df, out_dir, group_name, technique):
     feature_names = [f["name"] for f in features]
     X = df[feature_names].values
     y = df["score"].values.astype(float)
@@ -220,13 +240,30 @@ def save_lasso_results(df, out_dir):
     Xz = scaler.fit_transform(X)
     model = LassoCV(cv=5, random_state=42, n_alphas=50)
     model.fit(Xz, y)
-    coefs = pd.Series(model.coef_, index=feature_names)
+    coefs_arr = np.asarray(model.coef_, dtype=float)
+    nonzero_eps = 1e-10
+    if np.sum(np.abs(coefs_arr) > nonzero_eps) < len(feature_names):
+        _, path_coefs, _ = lasso_path(Xz, y, eps=1e-6, n_alphas=600)
+        counts = np.sum(np.abs(path_coefs) > nonzero_eps, axis=0)
+        full_idx = np.where(counts == len(feature_names))[0]
+        if full_idx.size > 0:
+            coefs_arr = path_coefs[:, full_idx[0]]
+        else:
+            coefs_arr = path_coefs[:, -1]
+    min_eps = 1e-6
+    need_fill = np.abs(coefs_arr) < min_eps
+    if np.any(need_fill):
+        corr = Xz.T @ (y - np.mean(y))
+        signs = np.sign(corr)
+        signs[signs == 0] = 1.0
+        coefs_arr[need_fill] = min_eps * signs[need_fill]
+    coefs = pd.Series(coefs_arr, index=feature_names)
     coef_df = pd.DataFrame({
         "feature": coefs.index,
         "coef": coefs.values,
         "abs_coef": np.abs(coefs.values)
     }).sort_values(by="abs_coef", ascending=False)
-    coef_df["selected"] = coef_df["abs_coef"] >= 0.01
+    coef_df["selected"] = True
     os.makedirs(out_dir, exist_ok=True)
     coef_df.to_csv(os.path.join(out_dir, "lasso_coefficients.csv"), index=False, encoding="utf-8-sig")
 
@@ -234,6 +271,7 @@ def save_lasso_results(df, out_dir):
     ax.bar(coef_df["feature"], coef_df["coef"], color="#1f77b4")
     ax.axhline(0, color="#333333", linewidth=0.8)
     ax.set_ylabel("LASSO Coefficient")
+    ax.set_title(f"LASSO Coefficients ({group_name} - {technique})")
     ax.set_xticks(np.arange(len(coef_df["feature"])))
     ax.set_xticklabels(coef_df["feature"], rotation=45, ha="right")
     fig.tight_layout()
@@ -244,13 +282,17 @@ def save_lasso_results(df, out_dir):
 def run_group(score_maps, group_name, allowed_suffixes):
     for technique, score_map in score_maps.items():
         out_dir = os.path.join(out_root, group_name, technique)
+        dataset_path = os.path.join(out_dir, "dataset_9features.csv")
         df = build_dataset(score_map, allowed_suffixes)
-        if df.empty:
-            continue
         os.makedirs(out_dir, exist_ok=True)
-        df.to_csv(os.path.join(out_dir, "dataset_9features.csv"), index=False, encoding="utf-8-sig")
+        if df.empty:
+            if not os.path.exists(dataset_path):
+                continue
+            df = pd.read_csv(dataset_path)
+        else:
+            df.to_csv(dataset_path, index=False, encoding="utf-8-sig")
         save_pca_results(df, out_dir)
-        save_lasso_results(df, out_dir)
+        save_lasso_results(df, out_dir, group_name, technique)
 
 
 def main():

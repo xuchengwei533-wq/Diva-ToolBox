@@ -35,7 +35,7 @@ outputs = {
     "Shimmer": os.path.join(output_root, "Shimmer"),
     "H1H2": os.path.join(output_root, "H1H2"),
     "HNR": os.path.join(output_root, "Hnr"),
-    "QValue": os.path.join(output_root, "QValue"),
+    "Q1": os.path.join(output_root, "Q1"),
     "SpectralSlope": os.path.join(output_root, "SpectralSlope"),
     "LowFreqEnergyRatio": os.path.join(output_root, "LowFreqEnergyRatio"),
     "HighFreqNoiseRatio": os.path.join(output_root, "HighFreqNoiseRatio"),
@@ -61,7 +61,7 @@ print(f"📦 共检测到 WAV 文件: {len(wav_files)}")
 for name, path in outputs.items():
     print(f"📄 {name} 输出目录: {path}")
 if not HAS_PM:
-    print("⚠️ 未检测到 parselmouth，HNR 使用近似计算方式")
+    print("⚠️ 未检测到 parselmouth，HNR 与 Q1 使用近似计算方式")
 print("-" * 60)
 
 def load_audio(file_path, target_sr=44100):
@@ -185,37 +185,80 @@ def extract_hnr(audio, sr, frame_length=2048, hop_length=512):
     hnr = 10.0 * np.log10((rms_h ** 2) / (rms_n ** 2 + 1e-12) + 1e-12)
     return hnr
 
-def extract_q_values(audio, sr, n_fft=2048, hop_length=512):
-    S = np.abs(librosa.stft(audio, n_fft=n_fft, hop_length=hop_length, win_length=n_fft, center=True))
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
-    q_vals = []
-    for t in range(S.shape[1]):
-        mag = S[:, t]
-        if mag.size == 0:
-            continue
-        peak_idx = int(np.argmax(mag))
-        peak_mag = mag[peak_idx]
-        if not np.isfinite(peak_mag) or peak_mag <= 0:
-            continue
-        f0 = freqs[peak_idx]
-        if not np.isfinite(f0) or f0 <= 0:
-            continue
-        target = peak_mag / np.sqrt(2.0)
-        left = peak_idx
-        while left > 0 and mag[left] >= target:
-            left -= 1
-        right = peak_idx
-        while right < len(mag) - 1 and mag[right] >= target:
-            right += 1
-        if left == peak_idx or right == peak_idx:
-            continue
-        bw = freqs[right] - freqs[left]
-        if not np.isfinite(bw) or bw <= 0:
-            continue
-        q_vals.append(float(f0 / bw))
-    if len(q_vals) == 0:
+def extract_q1_parselmouth(audio, sr, hop_length=512, max_formants=5, max_formant_hz=5500.0, window_length=0.025, pre_emphasis=50.0):
+    snd = pm.Sound(audio, sampling_frequency=sr)
+    time_step = hop_length / float(sr)
+    formant = pm.praat.call(snd, "To Formant (burg)", time_step, max_formants, max_formant_hz, window_length, pre_emphasis)
+    n_frames = int(pm.praat.call(formant, "Get number of frames"))
+    if n_frames <= 0:
         return None
-    return np.asarray(q_vals, dtype=np.float32)
+    q1_vals = []
+    for i in range(n_frames):
+        t = pm.praat.call(formant, "Get time from frame number", i + 1)
+        f1 = pm.praat.call(formant, "Get value at time", 1, t, "Hertz", "Linear")
+        bw1 = pm.praat.call(formant, "Get bandwidth at time", 1, t, "Hertz", "Linear")
+        if f1 is None or bw1 is None:
+            continue
+        f1 = float(f1)
+        bw1 = float(bw1)
+        if not np.isfinite(f1) or not np.isfinite(bw1):
+            continue
+        if f1 <= 0 or bw1 <= 0:
+            continue
+        q1_vals.append(f1 / bw1)
+    if len(q1_vals) == 0:
+        return None
+    return np.asarray(q1_vals, dtype=np.float32)
+
+def extract_q1_lpc(audio, sr, hop_length=512, win_length=1024, lpc_order=None, max_formant_hz=5500.0):
+    if lpc_order is None:
+        lpc_order = int(sr / 1000) + 2
+    if len(audio) < win_length:
+        return None
+    frames = librosa.util.frame(audio, frame_length=win_length, hop_length=hop_length).T
+    window = np.hamming(win_length).astype(np.float32)
+    q1_vals = []
+    for frame in frames:
+        frame = frame.astype(np.float32) * window
+        if not np.any(frame):
+            continue
+        try:
+            a = librosa.lpc(frame, order=lpc_order)
+        except Exception:
+            continue
+        roots = np.roots(a)
+        roots = roots[np.imag(roots) >= 0]
+        if roots.size == 0:
+            continue
+        angs = np.angle(roots)
+        freqs = angs * (sr / (2 * np.pi))
+        bw = -0.5 * (sr / np.pi) * np.log(np.abs(roots))
+        mask = (freqs > 90.0) & (freqs < max_formant_hz) & (bw > 0) & (bw < 4000)
+        freqs = freqs[mask]
+        bw = bw[mask]
+        if freqs.size == 0:
+            continue
+        idx = int(np.argmin(freqs))
+        f1 = float(freqs[idx])
+        bw1 = float(bw[idx])
+        if not np.isfinite(f1) or not np.isfinite(bw1):
+            continue
+        if f1 <= 0 or bw1 <= 0:
+            continue
+        q1_vals.append(f1 / bw1)
+    if len(q1_vals) == 0:
+        return None
+    return np.asarray(q1_vals, dtype=np.float32)
+
+def extract_q1(audio, sr, hop_length=512):
+    if HAS_PM:
+        try:
+            values = extract_q1_parselmouth(audio, sr, hop_length=hop_length)
+            if values is not None:
+                return values
+        except Exception:
+            pass
+    return extract_q1_lpc(audio, sr, hop_length=hop_length)
 
 def extract_spectral_slope(audio, sr, hop_length=512, n_fft=2048):
     S = np.abs(librosa.stft(audio, n_fft=n_fft, hop_length=hop_length, win_length=n_fft, center=True))
@@ -294,7 +337,7 @@ def handle_one(file, audio, sr):
         ("Shimmer", outputs["Shimmer"], extract_shimmer, (audio, sr)),
         ("H1H2", outputs["H1H2"], extract_h1h2, (audio, sr)),
         ("HNR", outputs["HNR"], extract_hnr, (audio, sr)),
-        ("QValue", outputs["QValue"], extract_q_values, (audio, sr)),
+        ("Q1", outputs["Q1"], extract_q1, (audio, sr)),
         ("SpectralSlope", outputs["SpectralSlope"], extract_spectral_slope, (audio, sr)),
         ("LowFreqEnergyRatio", outputs["LowFreqEnergyRatio"], extract_low_freq_energy_ratio, (audio, sr)),
         ("HighFreqNoiseRatio", outputs["HighFreqNoiseRatio"], extract_high_freq_noise_ratio, (audio, sr)),

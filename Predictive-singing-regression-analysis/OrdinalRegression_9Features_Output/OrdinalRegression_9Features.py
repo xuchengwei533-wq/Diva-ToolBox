@@ -29,8 +29,8 @@ features = [
         "feature_dir": os.path.join(data_dir, "HNR_Output")
     },
     {
-        "name": "QValue",
-        "feature_dir": os.path.join(data_dir, "QValueOutput")
+        "name": "Q1",
+        "feature_dir": os.path.join(data_dir, "Q1Output")
     },
     {
         "name": "SpectralSlope",

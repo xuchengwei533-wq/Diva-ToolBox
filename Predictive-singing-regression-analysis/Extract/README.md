@@ -36,7 +36,7 @@ python .\ExtractTool\Extract_NewFeatures.py
 
 - `Predictive-singing-regression-analysis\Extract\ExtractOutput\Dataset\Chest new0206`
 
-每个特征都会写入单独的子目录（Jitter、Shimmer、H1H2、Hnr、QValue、SpectralSlope、LowFreqEnergyRatio、HighFreqNoiseRatio、Cpp），每个音频对应一个 CSV。
+每个特征都会写入单独的子目录（Jitter、Shimmer、H1H2、Hnr、Q1、SpectralSlope、LowFreqEnergyRatio、HighFreqNoiseRatio、Cpp），每个音频对应一个 CSV。
 
 ## Extract_NewFeatures.py 提取的特征与逻辑
 
@@ -95,16 +95,20 @@ python .\ExtractTool\Extract_NewFeatures.py
   - 分别计算谐波与噪声的 RMS
   - 计算 `10 * log10( (RMS_h^2) / (RMS_n^2 + 1e-12) )`
 
-### 5) QValue
+### 5) Q1
 
-函数：`extract_q_values`
+函数：`extract_q1_parselmouth`（主方法），`extract_q1_lpc`（回退方法）
 
 逻辑：
 
-- 对每帧 STFT 幅度谱找到最大峰值频率 `f0`
-- 在谱线上搜索半功率点（幅度降到峰值的 `1/sqrt(2)`）
-- 带宽 `BW = f_right - f_left`
-- 计算 `Q = f0 / BW`
+- Q1 与共振峰直接相关，使用第一共振峰（F1）的中心频率和带宽计算
+- 主方法使用 Praat/Parselmouth 的 Burg 共振峰跟踪逐帧提取 F1 与 BW1
+- 每帧计算 Q1 后组成时序序列并保存为 CSV
+
+公式：
+
+- `Q1 = F1 / BW1`
+- 其中 `F1` 为第一共振峰频率（Hz），`BW1` 为第一共振峰带宽（Hz）
 
 ### 6) SpectralSlope
 

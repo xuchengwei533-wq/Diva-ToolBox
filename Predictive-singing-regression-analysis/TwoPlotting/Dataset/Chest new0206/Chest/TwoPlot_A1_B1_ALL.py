@@ -3,6 +3,9 @@ import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
+from scipy.stats import chi2, gaussian_kde
 
 here = os.path.dirname(os.path.abspath(__file__))
 repo_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
@@ -28,14 +31,14 @@ def get_feature_dir(data_dir, name, fallback_name=None):
     return d1
 
 FEATURES = [
-    {"name": "Jitter", "dir": get_feature_dir(data_dir, "Jitter"), "label": "Jitter"},
-    {"name": "Shimmer", "dir": get_feature_dir(data_dir, "Shimmer"), "label": "Shimmer"},
+    {"name": "Jitter", "dir": get_feature_dir(data_dir, "Jitter"), "label": "Jitter (a.u.)"},
+    {"name": "Shimmer", "dir": get_feature_dir(data_dir, "Shimmer"), "label": "Shimmer (a.u.)"},
     {"name": "H1H2", "dir": get_feature_dir(data_dir, "H1H2"), "label": "H1H2 (dB)"},
-    {"name": "HNR", "dir": get_feature_dir(data_dir, "HNR", "Hnr"), "label": "HNR"},
-    {"name": "QValue", "dir": get_feature_dir(data_dir, "QValue"), "label": "QValue"},
-    {"name": "SpectralSlope", "dir": get_feature_dir(data_dir, "SpectralSlope"), "label": "SpectralSlope"},
-    {"name": "LowFreqEnergyRatio", "dir": get_feature_dir(data_dir, "LowFreqEnergyRatio"), "label": "LowFreqEnergyRatio"},
-    {"name": "HighFreqNoiseRatio", "dir": get_feature_dir(data_dir, "HighFreqNoiseRatio"), "label": "HighFreqNoiseRatio"},
+    {"name": "HNR", "dir": get_feature_dir(data_dir, "HNR", "Hnr"), "label": "HNR (dB)"},
+    {"name": "Q1", "dir": get_feature_dir(data_dir, "Q1"), "label": "Q1 (a.u.)"},
+    {"name": "SpectralSlope", "dir": get_feature_dir(data_dir, "SpectralSlope"), "label": "SpectralSlope (a.u./Hz)"},
+    {"name": "LowFreqEnergyRatio", "dir": get_feature_dir(data_dir, "LowFreqEnergyRatio"), "label": "LowFreqEnergyRatio (a.u.)"},
+    {"name": "HighFreqNoiseRatio", "dir": get_feature_dir(data_dir, "HighFreqNoiseRatio"), "label": "HighFreqNoiseRatio (a.u.)"},
     {"name": "CPP", "dir": get_feature_dir(data_dir, "CPP", "Cpp"), "label": "CPP (dB)"}
 ]
 
@@ -198,36 +201,97 @@ def build_pair_points(feature_x, feature_y, score_map, allowed_suffixes=None, dr
         return np.array([], dtype=np.float32), np.array([], dtype=np.float32), np.array([], dtype=np.int32)
     return np.asarray(xs, dtype=np.float32), np.asarray(ys, dtype=np.float32), np.asarray(scores, dtype=np.int32)
 
-def scatter_feature_pair(ax, xs, ys, scores, title, xlabel, ylabel, xlim=None, ylim=None, point_size=30):
+def draw_panel(fig, left, bottom, width, height, xs, ys, scores, xlabel, ylabel, title, xlim=None, ylim=None):
     if xs.size == 0:
-        ax.set_axis_off()
-        ax.set_title(title)
         return
-    rng = np.random.default_rng(42)
-    x_span = float(np.max(xs) - np.min(xs))
-    y_span = float(np.max(ys) - np.min(ys))
-    x_jitter = 0.0 if x_span == 0 else x_span * 0.02
-    y_jitter = 0.0 if y_span == 0 else y_span * 0.02
-    xs_j = xs + rng.uniform(-x_jitter, x_jitter, size=xs.shape[0]).astype(np.float32)
-    ys_j = ys + rng.uniform(-y_jitter, y_jitter, size=ys.shape[0]).astype(np.float32)
-    style_map = {
-        1: {"color": "#1f77b4", "label": "1"},
-        3: {"color": "#2ca02c", "label": "3"},
-        5: {"color": "#ff7f0e", "label": "5"}
-    }
-    for score_val in [1, 3, 5]:
-        mask = scores == score_val
-        if np.any(mask):
-            style = style_map[score_val]
-            ax.scatter(xs_j[mask], ys_j[mask], s=point_size, alpha=0.8, color=style["color"], marker="o", label=style["label"])
+    spacing = 0.01
+    main_w = width * 0.70
+    main_h = height * 0.70
+    margin_w = width * 0.18
+    margin_h = height * 0.18
+    ax_main = fig.add_axes([left, bottom, main_w, main_h])
+    ax_top = fig.add_axes([left, bottom + main_h + spacing, main_w, margin_h], sharex=ax_main)
+    ax_right = fig.add_axes([left + main_w + spacing, bottom, margin_w, main_h], sharey=ax_main)
+    if xlim is None:
+        xlim = compute_axis_limits(xs)
+    if ylim is None:
+        ylim = compute_axis_limits(ys)
     if xlim is not None:
-        ax.set_xlim(xlim)
+        ax_main.set_xlim(xlim)
     if ylim is not None:
-        ax.set_ylim(ylim)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.legend(loc="upper right", frameon=False)
+        ax_main.set_ylim(ylim)
+    groups = sorted(np.unique(scores))
+    colors = {1: "#ED949A", 3: "#B2A3DD", 5: "#96CCEA"}
+    legend_elements = []
+    bins = 25
+    x_ref = np.asarray(xlim if xlim is not None else (float(np.min(xs)), float(np.max(xs))), dtype=np.float32)
+    y_ref = np.asarray(ylim if ylim is not None else (float(np.min(ys)), float(np.max(ys))), dtype=np.float32)
+    if np.isclose(x_ref[0], x_ref[1]):
+        x_ref[1] = x_ref[0] + 1e-6
+    if np.isclose(y_ref[0], y_ref[1]):
+        y_ref[1] = y_ref[0] + 1e-6
+    x_bins = np.linspace(float(x_ref[0]), float(x_ref[1]), bins + 1)
+    y_bins = np.linspace(float(y_ref[0]), float(y_ref[1]), bins + 1)
+    for g in groups:
+        mask = scores == g
+        xg = xs[mask]
+        yg = ys[mask]
+        color = colors.get(int(g), "#9E9E9E")
+        ax_main.scatter(xg, yg, s=45, alpha=0.75, edgecolor=color, color=color, linewidth=1, marker="o")
+        legend_elements.append(
+            Line2D([0], [0], marker="o", color="w", label=f"Score {int(g)}", markerfacecolor=color, markeredgecolor=color, markersize=8)
+        )
+        if xg.size > 2:
+            pts = np.column_stack([xg, yg]).astype(np.float64)
+            center = pts.mean(axis=0)
+            cov = np.cov(pts, rowvar=False)
+            if np.all(np.isfinite(cov)):
+                eigenvals, eigenvecs = np.linalg.eigh(cov)
+                order = eigenvals.argsort()[::-1]
+                e0 = max(float(eigenvals[order[0]]), 0.0)
+                e1 = max(float(eigenvals[order[1]]), 0.0)
+                scale = 2 * np.sqrt(chi2.ppf(0.95, 2))
+                width_e = scale * np.sqrt(e0)
+                height_e = scale * np.sqrt(e1)
+                angle = np.degrees(np.arctan2(*eigenvecs[:, order[0]][::-1]))
+                if width_e > 0 and height_e > 0:
+                    ellipse = mpatches.Ellipse(
+                        xy=center,
+                        width=width_e,
+                        height=height_e,
+                        angle=angle,
+                        facecolor=color,
+                        alpha=0.15,
+                        edgecolor=color,
+                        linestyle="--",
+                        linewidth=1.5
+                    )
+                    ax_main.add_patch(ellipse)
+        ax_top.hist(xg, bins=x_bins, alpha=0.35, color=color, density=True)
+        ax_right.hist(yg, bins=y_bins, orientation="horizontal", alpha=0.35, color=color, density=True)
+        if xg.size > 1:
+            try:
+                kde_x = gaussian_kde(xg.astype(np.float64))
+                x_plot = np.linspace(float(x_ref[0]), float(x_ref[1]), 200)
+                ax_top.plot(x_plot, kde_x(x_plot), linestyle="--", color=color, linewidth=1.5)
+            except Exception:
+                pass
+        if yg.size > 1:
+            try:
+                kde_y = gaussian_kde(yg.astype(np.float64))
+                y_plot = np.linspace(float(y_ref[0]), float(y_ref[1]), 200)
+                ax_right.plot(kde_y(y_plot), y_plot, linestyle="--", color=color, linewidth=1.5)
+            except Exception:
+                pass
+    ax_main.set_xlabel(xlabel)
+    ax_main.set_ylabel(ylabel)
+    ax_main.set_title(title)
+    ax_main.legend(handles=legend_elements, fontsize=9, frameon=False)
+    ax_main.tick_params(axis="both", which="both", labelbottom=True, labelleft=True)
+    ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+    ax_top.tick_params(axis="y", which="both", left=False, labelleft=False)
+    ax_right.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+    ax_right.tick_params(axis="y", which="both", left=False, labelleft=False)
 
 def compute_axis_limits(values):
     if values.size == 0:
@@ -256,15 +320,14 @@ def save_triplet_figures(score_map):
             a1_xs, a1_ys, a1_scores = build_pair_points(feature_x, feature_y, score_map, {"A", "1"}, use_drop)
             b1_xs, b1_ys, b1_scores = build_pair_points(feature_x, feature_y, score_map, {"B", "1"}, use_drop)
             all_xs, all_ys, all_scores = build_pair_points(feature_x, feature_y, score_map, None, use_drop)
-            xlim = compute_axis_limits(all_xs)
-            ylim = compute_axis_limits(all_ys)
-            fig, axes = plt.subplots(1, 3, figsize=(10, 3.6), dpi=150, sharey=False)
-            point_size = 22 if "Jitter" in (feature_x["name"], feature_y["name"]) else 30
-            scatter_feature_pair(axes[0], a1_xs, a1_ys, a1_scores, "A1", feature_x["label"], feature_y["label"], xlim, ylim, point_size)
-            scatter_feature_pair(axes[1], b1_xs, b1_ys, b1_scores, "B1", feature_x["label"], feature_y["label"], xlim, ylim, point_size)
-            scatter_feature_pair(axes[2], all_xs, all_ys, all_scores, "ALL", feature_x["label"], feature_y["label"], xlim, ylim, point_size)
+            fig = plt.figure(figsize=(18, 6), dpi=150)
+            panel_width = 0.30
+            panel_height = 0.80
+            bottom = 0.12
+            draw_panel(fig, 0.03, bottom, panel_width, panel_height, a1_xs, a1_ys, a1_scores, feature_x["label"], feature_y["label"], "A1")
+            draw_panel(fig, 0.35, bottom, panel_width, panel_height, b1_xs, b1_ys, b1_scores, feature_x["label"], feature_y["label"], "B1")
+            draw_panel(fig, 0.67, bottom, panel_width, panel_height, all_xs, all_ys, all_scores, feature_x["label"], feature_y["label"], "ALL")
             fig.suptitle(f"{TECHNIQUE} - {feature_x['name']} vs {feature_y['name']}", fontsize=12)
-            fig.tight_layout(rect=[0, 0, 1, 0.93])
             out_path = os.path.join(output_dir, f"{feature_x['name']}_vs_{feature_y['name']}_A1_B1_ALL.png")
             fig.savefig(out_path)
             plt.close(fig)
